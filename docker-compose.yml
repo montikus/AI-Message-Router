@@ -1,0 +1,87 @@
+name: ai-message-router
+
+x-app: &app
+  image: ai-message-router:local
+  pull_policy: build
+  build:
+    context: .
+    target: runtime
+  environment: &environment
+    OLLAMA_BASE_URL: http://ollama:11434
+    OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen3:4b-instruct-2507-q4_K_M}
+    OLLAMA_TIMEOUT: ${OLLAMA_TIMEOUT:-180}
+    OLLAMA_KEEP_ALIVE: 30m
+    SMTP_HOST: mailpit
+    SMTP_PORT: 1025
+    SMTP_TIMEOUT: 10
+    MAIL_FROM: router@example.com
+    MAX_CONCURRENT_REQUESTS: 2
+
+services:
+  ollama:
+    image: ollama/ollama:0.40.15
+    restart: unless-stopped
+    environment:
+      OLLAMA_HOST: 0.0.0.0:11434
+      OLLAMA_NUM_PARALLEL: 1
+      OLLAMA_MAX_LOADED_MODELS: 1
+    volumes:
+      - ollama-data:/root/.ollama
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 10s
+
+  mailpit:
+    image: axllent/mailpit:v1.27.4
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${MAILPIT_PORT:-8025}:8025"
+    environment:
+      MP_DATABASE: /data/mailpit.db
+      MP_MAX_MESSAGES: 5000
+    volumes:
+      - mailpit-data:/data
+    healthcheck:
+      test: ["CMD", "/mailpit", "readyz"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+# This is test task done by Roman Nadkernychnyi. For recruitment purposes only. 
+
+  model-init:
+    <<: *app
+    command: ["python", "-m", "app.bootstrap"]
+    restart: "no"
+    depends_on:
+      ollama:
+        condition: service_healthy
+
+  api:
+    <<: *app
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${API_PORT:-8000}:8000"
+    depends_on:
+      model-init:
+        condition: service_completed_successfully
+      mailpit:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health/ready', timeout=20)"]
+      interval: 15s
+      timeout: 25s
+      retries: 3
+      start_period: 15s
+
+  tests:
+    profiles: ["test"]
+    build:
+      context: .
+      target: test
+
+volumes:
+  ollama-data:
+  mailpit-data:
